@@ -1,0 +1,20 @@
+# Credentials & config sensitif
+.env
+
+# Data runtime (jangan di-commit)
+sticky_blocked.json
+urls_grup_*.txt
+
+# Binary hasil build
+*.exe
+nawala-bot
+myapp.exe
+
+# Log & output
+*.log
+*.out
+*.tmp
+
+# OS files
+.DS_Store
+Thumbs.db

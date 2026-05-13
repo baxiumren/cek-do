@@ -1,0 +1,8 @@
+# Format: KATEGORI|domain.com
+# Baris diawali # adalah komentar dan diabaikan
+# Salin file ini ke urls_grup_1.txt dan isi dengan domain yang ingin dipantau
+
+AMP|contoh-amp.com
+AMP|contoh-amp2.com
+PUSH|contoh-push.net
+REDIRECT|contoh-redirect.id
