@@ -64,6 +64,7 @@ func (h *Handler) Register() {
 	})
 
 	h.bot.Handle("/start", h.handleStart)
+	h.bot.Handle("/menu", h.handleMenu)
 	h.bot.Handle("/help", h.handleHelp)
 	h.bot.Handle("/info", h.handleInfo)
 	h.bot.Handle("/check", h.handleCheck)
@@ -82,35 +83,14 @@ func (h *Handler) Register() {
 
 	h.bot.Handle(telebot.OnText, func(c telebot.Context) error {
 		if strings.HasPrefix(c.Text(), "/") {
-			// Cancel wizard kalau user kirim command
+			// Cancel wizard kalau user kirim command lain
 			h.wizard.delete(c.Sender().ID)
 			return nil
 		}
 
-		// Cek dulu apakah user sedang dalam wizard
+		// Kalau sedang dalam wizard, teruskan ke wizard handler
 		if sess, ok := h.wizard.get(c.Sender().ID); ok {
-			// Tombol Batal reply keyboard
-			if c.Text() == "❌ Batal" {
-				h.wizard.delete(c.Sender().ID)
-				return c.Send("❌ *Dibatalkan.*", h.replyKeyboard(), telebot.ModeMarkdown)
-			}
 			return h.handleWizardStep(c, sess)
-		}
-
-		// Handle reply keyboard buttons
-		switch c.Text() {
-		case "📋 List Domain":
-			return h.handleListPrompt(c)
-		case "📊 Info":
-			return h.handleInfo(c)
-		case "⏱️ Interval Cek":
-			return h.handleIntervalPrompt(c)
-		case "➕ Add Domain":
-			return h.handleAddPrompt(c)
-		case "🔍 Check Domain":
-			return h.handleCheckPrompt(c)
-		case "🗑️ Remove Domain":
-			return h.handleRemovePrompt(c)
 		}
 
 		return h.handleMessage(c)
@@ -122,53 +102,23 @@ func (h *Handler) Register() {
 
 // ==================== HANDLERS ====================
 
-func (h *Handler) replyKeyboard() *telebot.ReplyMarkup {
-	menu := &telebot.ReplyMarkup{ResizeKeyboard: true}
-	menu.Reply(
-		menu.Row(
-			menu.Text("➕ Add Domain"),
-			menu.Text("🔍 Check Domain"),
-			menu.Text("🗑️ Remove Domain"),
-		),
-		menu.Row(
-			menu.Text("📋 List Domain"),
-			menu.Text("📊 Info"),
-			menu.Text("⏱️ Interval Cek"),
-		),
-	)
-	return menu
-}
-
-
 func (h *Handler) handleStart(c telebot.Context) error {
 	return c.Send(
 		"🤖 *Domain Checker Bot - KOMINFO*\n\n"+
 			"Halo! Bot monitoring status domain KOMINFO.\n\n"+
 			"🔧 *Fitur Utama:*\n"+
-			"• Auto cek domain setiap 45 detik\n"+
+			"• Auto cek domain berkala\n"+
 			"• Parallel processing (10 domain sekaligus)\n"+
 			"• Alert cycle 2m aktif → 10m jeda\n"+
 			"• Sticky block (sekali blocked = permanen)\n"+
-			"• Multi-grup support",
-		h.replyKeyboard(), telebot.ModeMarkdown,
+			"• Multi-grup support\n\n"+
+			"Pilih aksi dari menu di bawah:",
+		mainMenuMarkup(), telebot.ModeMarkdown,
 	)
 }
 
-func (h *Handler) handleCheckPrompt(c telebot.Context) error {
-	userID := c.Sender().ID
-	chatID := c.Chat().ID
-
-	h.wizard.set(userID, &wizardSession{
-		Step:   stepCheckDomain,
-		ChatID: chatID,
-	})
-
-	return c.Send(
-		"🔍 *Cek Domain*\n\n"+
-			"Kirim domain yang ingin dicek:\n"+
-			"_(contoh: google.com)_",
-		cancelReplyKeyboard(), telebot.ModeMarkdown,
-	)
+func (h *Handler) handleMenu(c telebot.Context) error {
+	return c.Send("🏠 *Menu Utama*\n\nPilih aksi:", mainMenuMarkup(), telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleHelp(c telebot.Context) error {
@@ -183,6 +133,7 @@ func (h *Handler) handleHelp(c telebot.Context) error {
 /cycle - Monitor alert cycle
 /info - Statistik bot
 /myid - Lihat ID kamu
+/menu - Tampilkan menu utama
 
 *Sticky Block (Admin):*
 /stickylist - Domain pernah blocked
@@ -196,14 +147,14 @@ func (h *Handler) handleHelp(c telebot.Context) error {
 *Admin:*
 /restart - Restart bot`
 
-	if err := c.Send(msg, h.replyKeyboard(), telebot.ModeMarkdown); err != nil {
-		return c.Send(strings.ReplaceAll(strings.ReplaceAll(msg, "*", ""), "`", ""), h.replyKeyboard())
+	if err := c.Send(msg, telebot.ModeMarkdown); err != nil {
+		return c.Send(strings.ReplaceAll(strings.ReplaceAll(msg, "*", ""), "`", ""))
 	}
 	return nil
 }
 
 func (h *Handler) handleInfo(c telebot.Context) error {
-	return c.Send(h.buildInfoMessage(c.Chat().ID), h.replyKeyboard(), telebot.ModeMarkdown)
+	return c.Send(h.buildInfoMessage(c.Chat().ID), telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleCheck(c telebot.Context) error {
@@ -219,13 +170,13 @@ func (h *Handler) handleCheck(c telebot.Context) error {
 
 func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 	if domain == "" {
-		return c.Send("❌ Domain tidak valid", h.replyKeyboard(), telebot.ModeMarkdown)
+		return c.Send("❌ Domain tidak valid", telebot.ModeMarkdown)
 	}
 
-	// Kirim loading + restore keyboard sekaligus
+	// Kirim loading message
 	loadingMsg, _ := h.bot.Send(c.Chat(),
 		fmt.Sprintf("⏳ *Mengecek domain* `%s`*...*", domain),
-		telebot.ModeMarkdown, h.replyKeyboard(),
+		telebot.ModeMarkdown,
 	)
 
 	isSticky, stickyTime := h.st.IsStickyBlocked(domain)
@@ -265,7 +216,7 @@ func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 		resultText = fmt.Sprintf("⚠️ Gagal cek status: `%s`", domain)
 	}
 
-	// Edit loading message → result (reply keyboard tetap terjaga karena loading sudah set-nya)
+	// Edit loading message → result
 	if loadingMsg != nil {
 		var err error
 		if inlineMenu != nil {
@@ -283,7 +234,7 @@ func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 	if inlineMenu != nil {
 		return c.Send(resultText, inlineMenu, telebot.ModeMarkdown)
 	}
-	return c.Send(resultText, h.replyKeyboard(), telebot.ModeMarkdown)
+	return c.Send(resultText, telebot.ModeMarkdown)
 }
 
 // isDomainInList cek apakah domain terdaftar di monitored list grup
@@ -387,23 +338,6 @@ func (h *Handler) handleAdd(c telebot.Context) error {
 	return c.Send(msg, telebot.ModeMarkdown)
 }
 
-func (h *Handler) handleRemovePrompt(c telebot.Context) error {
-	userID := c.Sender().ID
-	chatID := c.Chat().ID
-
-	h.wizard.set(userID, &wizardSession{
-		Step:   stepRemoveDomain,
-		ChatID: chatID,
-	})
-
-	return c.Send(
-		"🗑️ *Hapus Domain*\n\n"+
-			"Kirim domain yang ingin dihapus:\n"+
-			"_(contoh: google.com)_",
-		cancelReplyKeyboard(), telebot.ModeMarkdown,
-	)
-}
-
 func (h *Handler) handleRemove(c telebot.Context) error {
 	chatID := c.Chat().ID
 	if len(c.Args()) == 0 {
@@ -434,11 +368,11 @@ func (h *Handler) handleRemove(c telebot.Context) error {
 	}
 
 	if !found {
-		return c.Send(fmt.Sprintf("⚠️ Domain `%s` tidak ditemukan di list", domain), h.replyKeyboard(), telebot.ModeMarkdown)
+		return c.Send(fmt.Sprintf("⚠️ Domain `%s` tidak ditemukan di list", domain), telebot.ModeMarkdown)
 	}
 
 	if err := h.ch.SaveURLs(chatID, urlsByLabel); err != nil {
-		return c.Send("❌ Gagal menyimpan perubahan", h.replyKeyboard())
+		return c.Send("❌ Gagal menyimpan perubahan")
 	}
 
 	state := h.ch.GetGroupState(chatID)
@@ -458,30 +392,10 @@ func (h *Handler) handleRemove(c telebot.Context) error {
 		msg += "\n\n⚠️ Domain ini terblokir — alert cycle dihentikan"
 	}
 
-	return c.Send(msg, h.replyKeyboard(), telebot.ModeMarkdown)
-}
-
-func (h *Handler) handleListPrompt(c telebot.Context) error {
-	chatID := c.Chat().ID
-	urlsByLabel := h.ch.LoadURLs(chatID)
-
-	if len(urlsByLabel) == 0 {
-		return c.Send("📭 Belum ada domain yang terdaftar.\nGunakan tombol *➕ Add Domain* untuk menambahkan.", h.replyKeyboard(), telebot.ModeMarkdown)
-	}
-
-	h.wizard.set(c.Sender().ID, &wizardSession{
-		Step:   stepListCategory,
-		ChatID: chatID,
-	})
-
-	return c.Send(
-		"📋 *List Domain*\n\nPilih kategori atau lihat semua:",
-		h.listCategoryReplyKeyboard(chatID), telebot.ModeMarkdown,
-	)
+	return c.Send(msg, telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleList(c telebot.Context) error {
-	// Dipanggil via command /list [kategori]
 	filter := ""
 	if len(c.Args()) > 0 {
 		filter = strings.ToUpper(c.Args()[0])
@@ -494,7 +408,7 @@ func (h *Handler) showList(c telebot.Context, filterKategori string) error {
 	urlsByLabel := h.ch.LoadURLs(chatID)
 
 	if len(urlsByLabel) == 0 {
-		return c.Send("📭 Belum ada domain yang terdaftar.", h.replyKeyboard(), telebot.ModeMarkdown)
+		return c.Send("📭 Belum ada domain yang terdaftar.", telebot.ModeMarkdown)
 	}
 
 	var items []checker.DomainEntry
@@ -508,39 +422,19 @@ func (h *Handler) showList(c telebot.Context, filterKategori string) error {
 	}
 
 	if len(items) == 0 {
-		return c.Send(fmt.Sprintf("📭 Tidak ada domain untuk kategori: *%s*", filterKategori), h.replyKeyboard(), telebot.ModeMarkdown)
+		return c.Send(fmt.Sprintf("📭 Tidak ada domain untuk kategori: *%s*", filterKategori), telebot.ModeMarkdown)
 	}
 
 	sortDomainEntries(items)
-	return sendLongMessage(c, buildListText(items, filterKategori), h.replyKeyboard())
+	return sendLongMessage(c, buildListText(items, filterKategori))
 }
 
 func (h *Handler) handleCycle(c telebot.Context) error {
-	return c.Send(h.buildCycleMessage(c.Chat().ID), h.replyKeyboard(), telebot.ModeMarkdown)
+	return c.Send(h.buildCycleMessage(c.Chat().ID), telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleBlocked(c telebot.Context) error {
-	return c.Send(h.buildBlockedMessage(c.Chat().ID), h.replyKeyboard(), telebot.ModeMarkdown)
-}
-
-func (h *Handler) handleIntervalPrompt(c telebot.Context) error {
-	chatID := c.Chat().ID
-	current := h.ch.GetCheckInterval(chatID)
-
-	h.wizard.set(c.Sender().ID, &wizardSession{
-		Step:   stepSetInterval,
-		ChatID: chatID,
-	})
-
-	return c.Send(
-		fmt.Sprintf(
-			"⏱️ *Set Interval Cek Domain*\n\n"+
-				"Interval saat ini: *%s*\n\n"+
-				"Pilih interval baru:",
-			formatIntervalDuration(current),
-		),
-		intervalReplyKeyboard(), telebot.ModeMarkdown,
-	)
+	return c.Send(h.buildBlockedMessage(c.Chat().ID), telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleForceBlock(c telebot.Context) error {
@@ -720,7 +614,7 @@ func (h *Handler) handleMyID(c telebot.Context) error {
 			"📛 Nama: %s %s\n"+
 			"🔗 Username: %s",
 		user.ID, user.FirstName, user.LastName, username,
-	), h.replyKeyboard(), telebot.ModeMarkdown)
+	), telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleRestart(c telebot.Context) error {

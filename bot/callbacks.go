@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -11,6 +12,125 @@ import (
 	"myapp/store"
 	"gopkg.in/telebot.v3"
 )
+
+// ==================== MAIN MENU MARKUP ====================
+
+func mainMenuMarkup() *telebot.ReplyMarkup {
+	menu := &telebot.ReplyMarkup{}
+	menu.Inline(
+		menu.Row(
+			menu.Data("➕ Add Domain", "menu_add"),
+			menu.Data("🔍 Check Domain", "menu_check"),
+		),
+		menu.Row(
+			menu.Data("🗑️ Remove Domain", "menu_remove"),
+			menu.Data("📋 List Domain", "menu_list"),
+		),
+		menu.Row(
+			menu.Data("📊 Info", "menu_info"),
+			menu.Data("⏱️ Interval", "menu_interval"),
+		),
+	)
+	return menu
+}
+
+// ==================== INLINE MENU BUILDERS ====================
+
+// buildCategoryInlineMenu — tombol pilih kategori (untuk step Add Domain)
+func (h *Handler) buildCategoryInlineMenu(chatID int64) *telebot.ReplyMarkup {
+	urlsByLabel := h.ch.LoadURLs(chatID)
+
+	var labels []string
+	for label := range urlsByLabel {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	menu := &telebot.ReplyMarkup{}
+	var rows []telebot.Row
+
+	// 2 tombol per baris
+	for i := 0; i < len(labels); i += 2 {
+		var btns []telebot.Btn
+		for j := i; j < i+2 && j < len(labels); j++ {
+			btns = append(btns, menu.Data(labels[j], "cat_select", labels[j]))
+		}
+		rows = append(rows, menu.Row(btns...))
+	}
+
+	rows = append(rows, menu.Row(menu.Data("❌ Batal", "wizard_cancel")))
+	menu.Inline(rows...)
+	return menu
+}
+
+// buildListInlineMenu — tombol pilih kategori (untuk List Domain)
+func (h *Handler) buildListInlineMenu(chatID int64) *telebot.ReplyMarkup {
+	urlsByLabel := h.ch.LoadURLs(chatID)
+
+	var labels []string
+	for label := range urlsByLabel {
+		labels = append(labels, label)
+	}
+	sort.Strings(labels)
+
+	menu := &telebot.ReplyMarkup{}
+	var rows []telebot.Row
+
+	rows = append(rows, menu.Row(menu.Data("📋 Semua Domain", "list_cat", "ALL")))
+
+	for i := 0; i < len(labels); i += 2 {
+		var btns []telebot.Btn
+		for j := i; j < i+2 && j < len(labels); j++ {
+			btns = append(btns, menu.Data(labels[j], "list_cat", labels[j]))
+		}
+		rows = append(rows, menu.Row(btns...))
+	}
+
+	rows = append(rows, menu.Row(menu.Data("❌ Batal", "wizard_cancel")))
+	menu.Inline(rows...)
+	return menu
+}
+
+// buildIntervalInlineMenu — tombol pilih interval
+func buildIntervalInlineMenu() *telebot.ReplyMarkup {
+	menu := &telebot.ReplyMarkup{}
+	menu.Inline(
+		menu.Row(
+			menu.Data("30 Detik", "interval_set", "30"),
+			menu.Data("45 Detik", "interval_set", "45"),
+			menu.Data("1 Menit", "interval_set", "60"),
+		),
+		menu.Row(
+			menu.Data("2 Menit", "interval_set", "120"),
+			menu.Data("5 Menit", "interval_set", "300"),
+			menu.Data("10 Menit", "interval_set", "600"),
+		),
+		menu.Row(
+			menu.Data("15 Menit", "interval_set", "900"),
+			menu.Data("30 Menit", "interval_set", "1800"),
+		),
+		menu.Row(menu.Data("❌ Batal", "wizard_cancel")),
+	)
+	return menu
+}
+
+// cancelInlineMarkup — inline keyboard dengan hanya tombol Batal
+func cancelInlineMarkup() *telebot.ReplyMarkup {
+	menu := &telebot.ReplyMarkup{}
+	menu.Inline(menu.Row(menu.Data("❌ Batal", "wizard_cancel")))
+	return menu
+}
+
+// formatIntervalDuration — format durasi ke teks Indonesia
+func formatIntervalDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.0f detik", d.Seconds())
+	}
+	if d == time.Minute {
+		return "1 menit"
+	}
+	return fmt.Sprintf("%.0f menit", d.Minutes())
+}
 
 // ==================== SHARED MESSAGE BUILDERS ====================
 
@@ -161,8 +281,9 @@ func (h *Handler) buildCycleMessage(chatID int64) string {
 	return sb.String()
 }
 
-// ==================== INLINE MENUS ====================
+// ==================== RESULT MENUS ====================
 
+// checkResultMenu — tombol Hapus Domain di bawah hasil cek
 func checkResultMenu(domain string) *telebot.ReplyMarkup {
 	menu := &telebot.ReplyMarkup{}
 	menu.Inline(
@@ -171,12 +292,121 @@ func checkResultMenu(domain string) *telebot.ReplyMarkup {
 	return menu
 }
 
-// ==================== ACTION CALLBACKS (domain-specific) ====================
+// ==================== CALLBACK REGISTRATION ====================
 
 func (h *Handler) registerCallbacks() {
+	// Main menu
+	h.bot.Handle("\fmenu_add", h.cbMenuAdd)
+	h.bot.Handle("\fmenu_check", h.cbMenuCheck)
+	h.bot.Handle("\fmenu_remove", h.cbMenuRemove)
+	h.bot.Handle("\fmenu_list", h.cbMenuList)
+	h.bot.Handle("\fmenu_info", h.cbMenuInfo)
+	h.bot.Handle("\fmenu_interval", h.cbMenuInterval)
+
+	// Wizard inline
+	h.bot.Handle("\fcat_select", h.cbCatSelect)
+	h.bot.Handle("\flist_cat", h.cbListCat)
+	h.bot.Handle("\finterval_set", h.cbIntervalSet)
+
+	// Domain actions
 	h.bot.Handle("\fresetblock", h.cbResetBlock)
 	h.bot.Handle("\fremovedom", h.cbRemoveDomain)
 }
+
+// ==================== MAIN MENU CALLBACKS ====================
+
+func (h *Handler) cbMenuAdd(c telebot.Context) error {
+	c.Respond()
+	return h.handleAddPrompt(c)
+}
+
+func (h *Handler) cbMenuCheck(c telebot.Context) error {
+	c.Respond()
+	return h.handleCheckPrompt(c)
+}
+
+func (h *Handler) cbMenuRemove(c telebot.Context) error {
+	c.Respond()
+	return h.handleRemovePrompt(c)
+}
+
+func (h *Handler) cbMenuList(c telebot.Context) error {
+	c.Respond()
+	chatID := c.Chat().ID
+	urlsByLabel := h.ch.LoadURLs(chatID)
+	if len(urlsByLabel) == 0 {
+		return c.Send("📭 Belum ada domain yang terdaftar.\nGunakan tombol *➕ Add Domain* untuk menambahkan.", telebot.ModeMarkdown)
+	}
+	return c.Send("📋 *List Domain*\n\nPilih kategori atau lihat semua:", h.buildListInlineMenu(chatID), telebot.ModeMarkdown)
+}
+
+func (h *Handler) cbMenuInfo(c telebot.Context) error {
+	c.Respond()
+	return c.Send(h.buildInfoMessage(c.Chat().ID), telebot.ModeMarkdown)
+}
+
+func (h *Handler) cbMenuInterval(c telebot.Context) error {
+	c.Respond()
+	chatID := c.Chat().ID
+	current := h.ch.GetCheckInterval(chatID)
+	return c.Send(
+		fmt.Sprintf(
+			"⏱️ *Set Interval Cek Domain*\n\n"+
+				"Interval saat ini: *%s*\n\n"+
+				"Pilih interval baru:",
+			formatIntervalDuration(current),
+		),
+		buildIntervalInlineMenu(), telebot.ModeMarkdown,
+	)
+}
+
+// ==================== WIZARD INLINE CALLBACKS ====================
+
+func (h *Handler) cbCatSelect(c telebot.Context) error {
+	userID := c.Sender().ID
+	sess, ok := h.wizard.get(userID)
+	if !ok || sess.Step != stepWaitLabel {
+		c.Respond(&telebot.CallbackResponse{Text: "⚠️ Sesi tidak ditemukan, mulai ulang"})
+		return c.Edit("⚠️ Sesi sudah berakhir. Gunakan /menu untuk memulai lagi.", telebot.ModeMarkdown)
+	}
+
+	label := strings.ToUpper(strings.TrimSpace(c.Data()))
+	if label == "" {
+		return c.Respond(&telebot.CallbackResponse{Text: "❌ Kategori tidak valid"})
+	}
+
+	c.Respond()
+	// Edit pesan pilih kategori supaya tombol hilang dan terlihat pilihan yang dipilih
+	c.Edit(fmt.Sprintf("📂 Kategori: *%s* ✅", label), telebot.ModeMarkdown)
+	return h.doAddDomain(c, sess.Domain, label)
+}
+
+func (h *Handler) cbListCat(c telebot.Context) error {
+	c.Respond()
+	filter := c.Data()
+	if filter == "ALL" {
+		filter = ""
+	}
+	c.Delete()
+	return h.showList(c, filter)
+}
+
+func (h *Handler) cbIntervalSet(c telebot.Context) error {
+	chatID := c.Chat().ID
+	seconds, err := strconv.Atoi(c.Data())
+	if err != nil || seconds <= 0 {
+		return c.Respond(&telebot.CallbackResponse{Text: "❌ Nilai tidak valid"})
+	}
+	d := time.Duration(seconds) * time.Second
+	h.ch.SetCheckInterval(chatID, d)
+	c.Respond(&telebot.CallbackResponse{Text: "✅ Interval diubah!"})
+	return c.Edit(
+		fmt.Sprintf("✅ *Interval cek diubah!*\n\n⏱️ Domain akan dicek setiap *%s*", formatIntervalDuration(d)),
+		telebot.ModeMarkdown,
+	)
+}
+
+// ==================== ACTION CALLBACKS (domain-specific) ====================
 
 func (h *Handler) cbResetBlock(c telebot.Context) error {
 	chatID := c.Chat().ID
