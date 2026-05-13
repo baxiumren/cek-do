@@ -18,3 +18,6 @@ myapp.exe
 # OS files
 .DS_Store
 Thumbs.db
+
+# Local notes (jangan push)
+README.md
