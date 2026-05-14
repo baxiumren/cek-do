@@ -203,7 +203,9 @@ func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 			domain, trueCount, totalCheck, stickyInfo)
 		// Tombol aksi hanya muncul kalau domain terdaftar di list
 		if inList {
-			inlineMenu = checkResultMenu(domain)
+			inlineMenu = checkResultWithMenuMarkup(domain)
+		} else {
+			inlineMenu = menuMarkup()
 		}
 	case "SAFE":
 		resultText = fmt.Sprintf(
@@ -212,8 +214,10 @@ func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 				"✅ Tidak terdaftar dalam Daftar Blokir KOMINFO\n"+
 				"🔍 *API Check:* 0/%d blocked",
 			domain, totalCheck)
+		inlineMenu = menuMarkup()
 	default:
 		resultText = fmt.Sprintf("⚠️ Gagal cek status: `%s`", domain)
+		inlineMenu = menuMarkup()
 	}
 
 	// Edit loading message → result
@@ -426,7 +430,7 @@ func (h *Handler) showList(c telebot.Context, filterKategori string) error {
 	}
 
 	sortDomainEntries(items)
-	return sendLongMessage(c, buildListText(items, filterKategori))
+	return sendLongMessage(c, buildListText(items, filterKategori), menuMarkup())
 }
 
 func (h *Handler) handleCycle(c telebot.Context) error {

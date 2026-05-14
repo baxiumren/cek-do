@@ -121,6 +121,23 @@ func cancelInlineMarkup() *telebot.ReplyMarkup {
 	return menu
 }
 
+// menuMarkup — tombol 🏠 Menu Utama saja (dipasang di bawah hasil aksi)
+func menuMarkup() *telebot.ReplyMarkup {
+	menu := &telebot.ReplyMarkup{}
+	menu.Inline(menu.Row(menu.Data("🏠 Menu Utama", "main_menu")))
+	return menu
+}
+
+// checkResultWithMenuMarkup — tombol Hapus Domain + 🏠 Menu Utama
+func checkResultWithMenuMarkup(domain string) *telebot.ReplyMarkup {
+	menu := &telebot.ReplyMarkup{}
+	menu.Inline(
+		menu.Row(menu.Data("🗑️ Hapus Domain", "removedom", domain)),
+		menu.Row(menu.Data("🏠 Menu Utama", "main_menu")),
+	)
+	return menu
+}
+
 // formatIntervalDuration — format durasi ke teks Indonesia
 func formatIntervalDuration(d time.Duration) string {
 	if d < time.Minute {
@@ -308,6 +325,12 @@ func (h *Handler) registerCallbacks() {
 	h.bot.Handle("\flist_cat", h.cbListCat)
 	h.bot.Handle("\finterval_set", h.cbIntervalSet)
 
+	// Main menu shortcut
+	h.bot.Handle("\fmain_menu", func(c telebot.Context) error {
+		c.Respond()
+		return c.Send("🏠 *Menu Utama*\n\nPilih aksi:", mainMenuMarkup(), telebot.ModeMarkdown)
+	})
+
 	// Domain actions
 	h.bot.Handle("\fresetblock", h.cbResetBlock)
 	h.bot.Handle("\fremovedom", h.cbRemoveDomain)
@@ -342,7 +365,7 @@ func (h *Handler) cbMenuList(c telebot.Context) error {
 
 func (h *Handler) cbMenuInfo(c telebot.Context) error {
 	c.Respond()
-	return c.Send(h.buildInfoMessage(c.Chat().ID), telebot.ModeMarkdown)
+	return c.Send(h.buildInfoMessage(c.Chat().ID), menuMarkup(), telebot.ModeMarkdown)
 }
 
 func (h *Handler) cbMenuInterval(c telebot.Context) error {
@@ -402,7 +425,7 @@ func (h *Handler) cbIntervalSet(c telebot.Context) error {
 	c.Respond(&telebot.CallbackResponse{Text: "✅ Interval diubah!"})
 	return c.Edit(
 		fmt.Sprintf("✅ *Interval cek diubah!*\n\n⏱️ Domain akan dicek setiap *%s*", formatIntervalDuration(d)),
-		telebot.ModeMarkdown,
+		menuMarkup(), telebot.ModeMarkdown,
 	)
 }
 

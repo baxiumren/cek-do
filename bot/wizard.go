@@ -214,11 +214,11 @@ func (h *Handler) doRemoveDomain(c telebot.Context, domain string) error {
 
 	if !found {
 		return c.Send(fmt.Sprintf(
-			"⚠️ Domain `%s` tidak ditemukan di list", domain), telebot.ModeMarkdown)
+			"⚠️ Domain `%s` tidak ditemukan di list", domain), menuMarkup(), telebot.ModeMarkdown)
 	}
 
 	if err := h.ch.SaveURLs(chatID, urlsByLabel); err != nil {
-		return c.Send("❌ Gagal menyimpan perubahan")
+		return c.Send("❌ Gagal menyimpan perubahan", menuMarkup())
 	}
 
 	state := h.ch.GetGroupState(chatID)
@@ -240,7 +240,7 @@ func (h *Handler) doRemoveDomain(c telebot.Context, domain string) error {
 		msg += "\n\n⚠️ Domain ini sebelumnya terblokir — alert cycle dihentikan"
 	}
 
-	return c.Send(msg, telebot.ModeMarkdown)
+	return c.Send(msg, menuMarkup(), telebot.ModeMarkdown)
 }
 
 // doAddDomain proses simpan domain ke file (dipakai wizard text + callback tombol kategori)
@@ -327,10 +327,10 @@ func (h *Handler) doAddDomain(c telebot.Context, domain, label string) error {
 			statusLine = "⚠️ Gagal cek status API"
 		}
 
-		// Edit pesan konfirmasi dengan hasil cek
+		// Edit pesan konfirmasi dengan hasil cek + tombol menu
 		finalMsg := strings.Replace(confirmMsg, "\n\n📡 Mengecek status ke KOMINFO...", "\n\n"+statusLine, 1)
 		if sentMsg != nil {
-			h.bot.Edit(sentMsg, finalMsg, telebot.ModeMarkdown)
+			h.bot.Edit(sentMsg, finalMsg, menuMarkup(), telebot.ModeMarkdown)
 		}
 	}()
 
