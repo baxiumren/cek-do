@@ -300,7 +300,7 @@ func (h *Handler) buildCycleMessage(chatID int64) string {
 
 // ==================== RESULT MENUS ====================
 
-// checkResultMenu — tombol Hapus Domain di bawah hasil cek
+// checkResultMenu — tombol Hapus Domain di bawah hasil cek (tanpa menu button)
 func checkResultMenu(domain string) *telebot.ReplyMarkup {
 	menu := &telebot.ReplyMarkup{}
 	menu.Inline(
@@ -312,7 +312,13 @@ func checkResultMenu(domain string) *telebot.ReplyMarkup {
 // ==================== CALLBACK REGISTRATION ====================
 
 func (h *Handler) registerCallbacks() {
-	// Main menu
+	// Main menu shortcut — edit pesan in-place
+	h.bot.Handle("\fmain_menu", func(c telebot.Context) error {
+		c.Respond()
+		return c.Edit("🏠 *Menu Utama*\n\nPilih aksi:", mainMenuMarkup(), telebot.ModeMarkdown)
+	})
+
+	// Main menu buttons
 	h.bot.Handle("\fmenu_add", h.cbMenuAdd)
 	h.bot.Handle("\fmenu_check", h.cbMenuCheck)
 	h.bot.Handle("\fmenu_remove", h.cbMenuRemove)
@@ -325,32 +331,68 @@ func (h *Handler) registerCallbacks() {
 	h.bot.Handle("\flist_cat", h.cbListCat)
 	h.bot.Handle("\finterval_set", h.cbIntervalSet)
 
-	// Main menu shortcut
-	h.bot.Handle("\fmain_menu", func(c telebot.Context) error {
-		c.Respond()
-		return c.Send("🏠 *Menu Utama*\n\nPilih aksi:", mainMenuMarkup(), telebot.ModeMarkdown)
-	})
-
 	// Domain actions
 	h.bot.Handle("\fresetblock", h.cbResetBlock)
 	h.bot.Handle("\fremovedom", h.cbRemoveDomain)
 }
 
-// ==================== MAIN MENU CALLBACKS ====================
+// ==================== MAIN MENU CALLBACKS (edit in-place) ====================
 
 func (h *Handler) cbMenuAdd(c telebot.Context) error {
+	userID := c.Sender().ID
+	chatID := c.Chat().ID
+
+	h.wizard.set(userID, &wizardSession{
+		Step:      stepWaitDomain,
+		ChatID:    chatID,
+		PromptMsg: c.Message(), // simpan menu message untuk di-edit in-place
+	})
+
 	c.Respond()
-	return h.handleAddPrompt(c)
+	return c.Edit(
+		"➕ *Tambah Domain*\n\n"+
+			"Kirim domain yang ingin ditambahkan:\n"+
+			"_(contoh: contoh.com)_",
+		cancelInlineMarkup(), telebot.ModeMarkdown,
+	)
 }
 
 func (h *Handler) cbMenuCheck(c telebot.Context) error {
+	userID := c.Sender().ID
+	chatID := c.Chat().ID
+
+	h.wizard.set(userID, &wizardSession{
+		Step:      stepCheckDomain,
+		ChatID:    chatID,
+		PromptMsg: c.Message(),
+	})
+
 	c.Respond()
-	return h.handleCheckPrompt(c)
+	return c.Edit(
+		"🔍 *Cek Domain*\n\n"+
+			"Kirim domain yang ingin dicek:\n"+
+			"_(contoh: google.com)_",
+		cancelInlineMarkup(), telebot.ModeMarkdown,
+	)
 }
 
 func (h *Handler) cbMenuRemove(c telebot.Context) error {
+	userID := c.Sender().ID
+	chatID := c.Chat().ID
+
+	h.wizard.set(userID, &wizardSession{
+		Step:      stepRemoveDomain,
+		ChatID:    chatID,
+		PromptMsg: c.Message(),
+	})
+
 	c.Respond()
-	return h.handleRemovePrompt(c)
+	return c.Edit(
+		"🗑️ *Hapus Domain*\n\n"+
+			"Kirim domain yang ingin dihapus:\n"+
+			"_(contoh: google.com)_",
+		cancelInlineMarkup(), telebot.ModeMarkdown,
+	)
 }
 
 func (h *Handler) cbMenuList(c telebot.Context) error {
@@ -358,21 +400,21 @@ func (h *Handler) cbMenuList(c telebot.Context) error {
 	chatID := c.Chat().ID
 	urlsByLabel := h.ch.LoadURLs(chatID)
 	if len(urlsByLabel) == 0 {
-		return c.Send("📭 Belum ada domain yang terdaftar.\nGunakan tombol *➕ Add Domain* untuk menambahkan.", telebot.ModeMarkdown)
+		return c.Edit("📭 Belum ada domain yang terdaftar.\nGunakan tombol *➕ Add Domain* untuk menambahkan.", menuMarkup(), telebot.ModeMarkdown)
 	}
-	return c.Send("📋 *List Domain*\n\nPilih kategori atau lihat semua:", h.buildListInlineMenu(chatID), telebot.ModeMarkdown)
+	return c.Edit("📋 *List Domain*\n\nPilih kategori atau lihat semua:", h.buildListInlineMenu(chatID), telebot.ModeMarkdown)
 }
 
 func (h *Handler) cbMenuInfo(c telebot.Context) error {
 	c.Respond()
-	return c.Send(h.buildInfoMessage(c.Chat().ID), menuMarkup(), telebot.ModeMarkdown)
+	return c.Edit(h.buildInfoMessage(c.Chat().ID), menuMarkup(), telebot.ModeMarkdown)
 }
 
 func (h *Handler) cbMenuInterval(c telebot.Context) error {
 	c.Respond()
 	chatID := c.Chat().ID
 	current := h.ch.GetCheckInterval(chatID)
-	return c.Send(
+	return c.Edit(
 		fmt.Sprintf(
 			"⏱️ *Set Interval Cek Domain*\n\n"+
 				"Interval saat ini: *%s*\n\n"+
@@ -390,7 +432,7 @@ func (h *Handler) cbCatSelect(c telebot.Context) error {
 	sess, ok := h.wizard.get(userID)
 	if !ok || sess.Step != stepWaitLabel {
 		c.Respond(&telebot.CallbackResponse{Text: "⚠️ Sesi tidak ditemukan, mulai ulang"})
-		return c.Edit("⚠️ Sesi sudah berakhir. Gunakan /menu untuk memulai lagi.", telebot.ModeMarkdown)
+		return c.Edit("⚠️ Sesi sudah berakhir. Gunakan /menu untuk memulai lagi.", menuMarkup(), telebot.ModeMarkdown)
 	}
 
 	label := strings.ToUpper(strings.TrimSpace(c.Data()))
@@ -399,9 +441,8 @@ func (h *Handler) cbCatSelect(c telebot.Context) error {
 	}
 
 	c.Respond()
-	// Edit pesan pilih kategori supaya tombol hilang dan terlihat pilihan yang dipilih
-	c.Edit(fmt.Sprintf("📂 Kategori: *%s* ✅", label), telebot.ModeMarkdown)
-	return h.doAddDomain(c, sess.Domain, label)
+	// c.Message() adalah PromptMsg (karena tombol ada di sana)
+	return h.doAddDomain(c, sess.Domain, label, c.Message())
 }
 
 func (h *Handler) cbListCat(c telebot.Context) error {
@@ -410,8 +451,8 @@ func (h *Handler) cbListCat(c telebot.Context) error {
 	if filter == "ALL" {
 		filter = ""
 	}
-	c.Delete()
-	return h.showList(c, filter)
+	// Edit pesan in-place (list menggantikan menu kategori)
+	return h.showListEditing(c, filter)
 }
 
 func (h *Handler) cbIntervalSet(c telebot.Context) error {
@@ -454,7 +495,7 @@ func (h *Handler) cbResetBlock(c telebot.Context) error {
 		return c.Edit(fmt.Sprintf(
 			"🔄 *BLOCK STATUS RESET*\n\n🌐 Domain: `%s`\n👤 By: %s\n\n✅ Domain akan dicek ulang dari API",
 			domain, getUserName(c.Sender()),
-		), telebot.ModeMarkdown)
+		), menuMarkup(), telebot.ModeMarkdown)
 	}
 	return c.Respond(&telebot.CallbackResponse{Text: "⚠️ Domain tidak ada di blocked list"})
 }
@@ -492,10 +533,9 @@ func (h *Handler) cbRemoveDomain(c telebot.Context) error {
 	}
 
 	if !found {
-		// Domain sudah tidak ada — hapus tombol dari pesan supaya tidak bisa diklik lagi
+		// Domain sudah tidak ada — hapus tombol dari pesan
 		c.Respond(&telebot.CallbackResponse{Text: "⚠️ Domain sudah tidak ada di list"})
-		c.Edit(c.Message().Text, telebot.ModeMarkdown) // edit tanpa inline keyboard
-		return nil
+		return c.Edit(c.Message().Text, menuMarkup(), telebot.ModeMarkdown)
 	}
 
 	if err := h.ch.SaveURLs(chatID, urlsByLabel); err != nil {
@@ -512,7 +552,7 @@ func (h *Handler) cbRemoveDomain(c telebot.Context) error {
 	return c.Edit(fmt.Sprintf(
 		"🗑️ *DOMAIN DIHAPUS*\n\n🌐 Domain: `%s`\n📂 Kategori: *%s*\n👤 By: %s\n\n✅ Alert cycle dihentikan",
 		domain, domainLabel, getUserName(c.Sender()),
-	), telebot.ModeMarkdown)
+	), menuMarkup(), telebot.ModeMarkdown)
 }
 
 // ==================== HELPERS ====================

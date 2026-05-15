@@ -24,9 +24,10 @@ const (
 )
 
 type wizardSession struct {
-	Step   wizardStep
-	Domain string
-	ChatID int64
+	Step      wizardStep
+	Domain    string
+	ChatID    int64
+	PromptMsg *telebot.Message // pesan yang di-edit in-place (nil = dari command)
 }
 
 type wizardStore struct {
@@ -59,27 +60,9 @@ func (ws *wizardStore) delete(userID int64) {
 	delete(ws.sessions, userID)
 }
 
-// ==================== WIZARD HANDLERS ====================
+// ==================== PROMPT HELPERS (untuk command /check dll) ====================
 
-// handleAddPrompt dipanggil saat klik tombol ➕ Add Domain
-func (h *Handler) handleAddPrompt(c telebot.Context) error {
-	userID := c.Sender().ID
-	chatID := c.Chat().ID
-
-	h.wizard.set(userID, &wizardSession{
-		Step:   stepWaitDomain,
-		ChatID: chatID,
-	})
-
-	return c.Send(
-		"➕ *Tambah Domain*\n\n"+
-			"Kirim domain yang ingin ditambahkan:\n"+
-			"_(contoh: contoh.com)_",
-		cancelInlineMarkup(), telebot.ModeMarkdown,
-	)
-}
-
-// handleCheckPrompt dipanggil saat klik tombol 🔍 Check Domain
+// handleCheckPrompt — dipanggil dari command /check tanpa args (kirim pesan baru, tanpa PromptMsg)
 func (h *Handler) handleCheckPrompt(c telebot.Context) error {
 	userID := c.Sender().ID
 	chatID := c.Chat().ID
@@ -87,6 +70,7 @@ func (h *Handler) handleCheckPrompt(c telebot.Context) error {
 	h.wizard.set(userID, &wizardSession{
 		Step:   stepCheckDomain,
 		ChatID: chatID,
+		// PromptMsg: nil — command flow, tidak edit in-place
 	})
 
 	return c.Send(
@@ -97,23 +81,7 @@ func (h *Handler) handleCheckPrompt(c telebot.Context) error {
 	)
 }
 
-// handleRemovePrompt dipanggil saat klik tombol 🗑️ Remove Domain
-func (h *Handler) handleRemovePrompt(c telebot.Context) error {
-	userID := c.Sender().ID
-	chatID := c.Chat().ID
-
-	h.wizard.set(userID, &wizardSession{
-		Step:   stepRemoveDomain,
-		ChatID: chatID,
-	})
-
-	return c.Send(
-		"🗑️ *Hapus Domain*\n\n"+
-			"Kirim domain yang ingin dihapus:\n"+
-			"_(contoh: google.com)_",
-		cancelInlineMarkup(), telebot.ModeMarkdown,
-	)
-}
+// ==================== WIZARD STEP HANDLER ====================
 
 // handleWizardStep dipanggil dari OnText ketika user sedang dalam wizard
 func (h *Handler) handleWizardStep(c telebot.Context, sess *wizardSession) error {
@@ -125,7 +93,7 @@ func (h *Handler) handleWizardStep(c telebot.Context, sess *wizardSession) error
 	case stepWaitDomain:
 		domain := store.CleanDomain(text)
 		if domain == "" {
-			return c.Send("❌ Domain tidak valid, coba lagi:", cancelInlineMarkup())
+			return h.editOrSend(c, sess.PromptMsg, "❌ Domain tidak valid, coba lagi:", cancelInlineMarkup())
 		}
 
 		// Cek apakah domain sudah terdaftar di list
@@ -157,30 +125,39 @@ func (h *Handler) handleWizardStep(c telebot.Context, sess *wizardSession) error
 		} else {
 			msg = fmt.Sprintf("✅ Domain: `%s`\n\n📂 *Pilih kategori atau ketik nama baru:*", domain)
 		}
-		return c.Send(msg, h.buildCategoryInlineMenu(sess.ChatID), telebot.ModeMarkdown)
+
+		catMenu := h.buildCategoryInlineMenu(sess.ChatID)
+
+		// Edit PromptMsg in-place kalau ada, fallback send baru
+		if sess.PromptMsg != nil {
+			if _, err := h.bot.Edit(sess.PromptMsg, msg, catMenu, telebot.ModeMarkdown); err == nil {
+				return nil
+			}
+		}
+		return c.Send(msg, catMenu, telebot.ModeMarkdown)
 
 	case stepWaitLabel:
 		label := strings.ToUpper(strings.TrimSpace(text))
 		if label == "" {
-			return c.Send("❌ Kategori tidak boleh kosong, coba lagi:", cancelInlineMarkup())
+			return h.editOrSend(c, sess.PromptMsg, "❌ Kategori tidak boleh kosong, coba lagi:", cancelInlineMarkup())
 		}
-		return h.doAddDomain(c, sess.Domain, label)
+		return h.doAddDomain(c, sess.Domain, label, sess.PromptMsg)
 
 	case stepCheckDomain:
 		h.wizard.delete(userID)
 		domain := store.CleanDomain(text)
 		if domain == "" {
-			return c.Send("❌ Domain tidak valid", telebot.ModeMarkdown)
+			return h.editOrSend(c, sess.PromptMsg, "❌ Domain tidak valid", menuMarkup())
 		}
-		return h.doCheckDomain(c, domain)
+		return h.doCheckDomain(c, domain, sess.PromptMsg)
 
 	case stepRemoveDomain:
 		h.wizard.delete(userID)
 		domain := store.CleanDomain(text)
 		if domain == "" {
-			return c.Send("❌ Domain tidak valid", telebot.ModeMarkdown)
+			return h.editOrSend(c, sess.PromptMsg, "❌ Domain tidak valid", menuMarkup())
 		}
-		return h.doRemoveDomain(c, domain)
+		return h.doRemoveDomain(c, domain, sess.PromptMsg)
 	}
 
 	return nil
@@ -189,7 +166,8 @@ func (h *Handler) handleWizardStep(c telebot.Context, sess *wizardSession) error
 // ==================== DOMAIN OPERATIONS ====================
 
 // doRemoveDomain proses hapus domain dari list
-func (h *Handler) doRemoveDomain(c telebot.Context, domain string) error {
+// editMsg: pesan yang akan di-edit in-place (nil = kirim pesan baru)
+func (h *Handler) doRemoveDomain(c telebot.Context, domain string, editMsg *telebot.Message) error {
 	chatID := c.Chat().ID
 	urlsByLabel := h.ch.LoadURLs(chatID)
 
@@ -213,12 +191,13 @@ func (h *Handler) doRemoveDomain(c telebot.Context, domain string) error {
 	}
 
 	if !found {
-		return c.Send(fmt.Sprintf(
-			"⚠️ Domain `%s` tidak ditemukan di list", domain), menuMarkup(), telebot.ModeMarkdown)
+		return h.editOrSend(c, editMsg,
+			fmt.Sprintf("⚠️ Domain `%s` tidak ditemukan di list", domain),
+			menuMarkup())
 	}
 
 	if err := h.ch.SaveURLs(chatID, urlsByLabel); err != nil {
-		return c.Send("❌ Gagal menyimpan perubahan", menuMarkup())
+		return h.editOrSend(c, editMsg, "❌ Gagal menyimpan perubahan", menuMarkup())
 	}
 
 	state := h.ch.GetGroupState(chatID)
@@ -240,11 +219,12 @@ func (h *Handler) doRemoveDomain(c telebot.Context, domain string) error {
 		msg += "\n\n⚠️ Domain ini sebelumnya terblokir — alert cycle dihentikan"
 	}
 
-	return c.Send(msg, menuMarkup(), telebot.ModeMarkdown)
+	return h.editOrSend(c, editMsg, msg, menuMarkup())
 }
 
-// doAddDomain proses simpan domain ke file (dipakai wizard text + callback tombol kategori)
-func (h *Handler) doAddDomain(c telebot.Context, domain, label string) error {
+// doAddDomain proses simpan domain ke file
+// editMsg: pesan yang akan di-edit in-place (nil = kirim pesan baru)
+func (h *Handler) doAddDomain(c telebot.Context, domain, label string, editMsg *telebot.Message) error {
 	chatID := c.Chat().ID
 	h.wizard.delete(c.Sender().ID)
 
@@ -256,9 +236,9 @@ func (h *Handler) doAddDomain(c telebot.Context, domain, label string) error {
 		for i, d := range domains {
 			if d == domain {
 				if cat == label {
-					return c.Send(fmt.Sprintf(
-						"⚠️ Domain `%s` sudah ada di kategori *%s*",
-						domain, cat), telebot.ModeMarkdown)
+					return h.editOrSend(c, editMsg,
+						fmt.Sprintf("⚠️ Domain `%s` sudah ada di kategori *%s*", domain, cat),
+						menuMarkup())
 				}
 				oldCategory = cat
 				isEdit = true
@@ -278,12 +258,12 @@ func (h *Handler) doAddDomain(c telebot.Context, domain, label string) error {
 
 	if err := h.ch.SaveURLs(chatID, urlsByLabel); err != nil {
 		log.Printf("[WIZARD ADD ERROR] chat=%d: %v", chatID, err)
-		return c.Send("❌ Gagal menyimpan domain")
+		return h.editOrSend(c, editMsg, "❌ Gagal menyimpan domain", menuMarkup())
 	}
 
 	log.Printf("[WIZARD ADD] chat=%d domain=%s label=%s isEdit=%v", chatID, domain, label, isEdit)
 
-	// Balas sukses langsung tanpa nunggu cek API
+	// Bangun pesan konfirmasi (loading state)
 	var confirmMsg string
 	if isEdit {
 		confirmMsg = fmt.Sprintf(
@@ -297,7 +277,16 @@ func (h *Handler) doAddDomain(c telebot.Context, domain, label string) error {
 			domain, label)
 	}
 
-	sentMsg, _ := c.Bot().Send(c.Chat(), confirmMsg, telebot.ModeMarkdown)
+	// Edit in-place jika ada editMsg, else kirim baru
+	var sentMsg *telebot.Message
+	if editMsg != nil {
+		if _, err := h.bot.Edit(editMsg, confirmMsg, telebot.ModeMarkdown); err == nil {
+			sentMsg = editMsg // edit berhasil, gunakan editMsg sebagai sentMsg
+		}
+	}
+	if sentMsg == nil {
+		sentMsg, _ = c.Bot().Send(c.Chat(), confirmMsg, telebot.ModeMarkdown)
+	}
 
 	// Priority check di background — update pesan setelah selesai
 	go func() {
@@ -340,10 +329,10 @@ func (h *Handler) doAddDomain(c telebot.Context, domain, label string) error {
 // ==================== WIZARD CALLBACKS ====================
 
 func (h *Handler) registerWizardCallbacks() {
-	// Batal wizard via inline button
+	// Batal wizard via inline button — edit pesan jadi "Dibatalkan" + tombol menu
 	h.bot.Handle("\fwizard_cancel", func(c telebot.Context) error {
 		h.wizard.delete(c.Sender().ID)
 		c.Respond(&telebot.CallbackResponse{Text: "Dibatalkan"})
-		return c.Edit("❌ *Dibatalkan.*", telebot.ModeMarkdown)
+		return c.Edit("❌ *Dibatalkan.*", menuMarkup(), telebot.ModeMarkdown)
 	})
 }

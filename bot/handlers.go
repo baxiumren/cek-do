@@ -46,6 +46,20 @@ func New(b *telebot.Bot, cfg *config.Config, st *store.Store, ch *checker.Checke
 	}
 }
 
+// ==================== HELPER ====================
+
+// editOrSend — edit pesan in-place jika msg tidak nil, fallback kirim pesan baru
+func (h *Handler) editOrSend(c telebot.Context, msg *telebot.Message, text string, opts ...interface{}) error {
+	if msg != nil {
+		args := append([]interface{}{telebot.ModeMarkdown}, opts...)
+		if _, err := h.bot.Edit(msg, text, args...); err == nil {
+			return nil
+		}
+	}
+	args := append([]interface{}{telebot.ModeMarkdown}, opts...)
+	return c.Send(text, args...)
+}
+
 // ==================== HANDLER REGISTRATION ====================
 
 func (h *Handler) Register() {
@@ -154,7 +168,7 @@ func (h *Handler) handleHelp(c telebot.Context) error {
 }
 
 func (h *Handler) handleInfo(c telebot.Context) error {
-	return c.Send(h.buildInfoMessage(c.Chat().ID), telebot.ModeMarkdown)
+	return c.Send(h.buildInfoMessage(c.Chat().ID), menuMarkup(), telebot.ModeMarkdown)
 }
 
 func (h *Handler) handleCheck(c telebot.Context) error {
@@ -165,19 +179,26 @@ func (h *Handler) handleCheck(c telebot.Context) error {
 	if len(c.Args()) == 0 {
 		return h.handleCheckPrompt(c)
 	}
-	return h.doCheckDomain(c, store.CleanDomain(c.Args()[0]))
+	return h.doCheckDomain(c, store.CleanDomain(c.Args()[0]), nil)
 }
 
-func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
+// doCheckDomain cek domain dan edit pesan in-place jika editMsg tidak nil
+func (h *Handler) doCheckDomain(c telebot.Context, domain string, editMsg *telebot.Message) error {
 	if domain == "" {
-		return c.Send("❌ Domain tidak valid", telebot.ModeMarkdown)
+		return h.editOrSend(c, editMsg, "❌ Domain tidak valid", menuMarkup())
 	}
 
-	// Kirim loading message
-	loadingMsg, _ := h.bot.Send(c.Chat(),
-		fmt.Sprintf("⏳ *Mengecek domain* `%s`*...*", domain),
-		telebot.ModeMarkdown,
-	)
+	// Tampilkan loading — edit in-place jika editMsg ada, else kirim baru
+	loadingText := fmt.Sprintf("⏳ *Mengecek domain* `%s`*...*", domain)
+	var loadingMsg *telebot.Message
+	if editMsg != nil {
+		if _, err := h.bot.Edit(editMsg, loadingText, telebot.ModeMarkdown); err == nil {
+			loadingMsg = editMsg
+		}
+	}
+	if loadingMsg == nil {
+		loadingMsg, _ = h.bot.Send(c.Chat(), loadingText, telebot.ModeMarkdown)
+	}
 
 	isSticky, stickyTime := h.st.IsStickyBlocked(domain)
 	status, trueCount, totalCheck := h.ch.CheckDomainManual(domain)
@@ -201,7 +222,6 @@ func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 				"🔍 *API Check:* %d/%d blocked%s\n"+
 				"💡 *Saran:* Gunakan domain baru",
 			domain, trueCount, totalCheck, stickyInfo)
-		// Tombol aksi hanya muncul kalau domain terdaftar di list
 		if inList {
 			inlineMenu = checkResultWithMenuMarkup(domain)
 		} else {
@@ -222,23 +242,17 @@ func (h *Handler) doCheckDomain(c telebot.Context, domain string) error {
 
 	// Edit loading message → result
 	if loadingMsg != nil {
-		var err error
-		if inlineMenu != nil {
-			_, err = h.bot.Edit(loadingMsg, resultText, inlineMenu, telebot.ModeMarkdown)
-		} else {
-			_, err = h.bot.Edit(loadingMsg, resultText, telebot.ModeMarkdown)
-		}
-		if err == nil {
+		if _, err := h.bot.Edit(loadingMsg, resultText, inlineMenu, telebot.ModeMarkdown); err == nil {
 			return nil
 		}
-		// Fallback kalau edit gagal
-		h.bot.Delete(loadingMsg)
+		// Edit gagal — kalau loading adalah pesan baru (bukan editMsg), hapus dulu
+		if editMsg == nil {
+			h.bot.Delete(loadingMsg)
+		}
 	}
 
-	if inlineMenu != nil {
-		return c.Send(resultText, inlineMenu, telebot.ModeMarkdown)
-	}
-	return c.Send(resultText, telebot.ModeMarkdown)
+	// Fallback: kirim pesan baru
+	return c.Send(resultText, inlineMenu, telebot.ModeMarkdown)
 }
 
 // isDomainInList cek apakah domain terdaftar di monitored list grup
@@ -407,6 +421,7 @@ func (h *Handler) handleList(c telebot.Context) error {
 	return h.showList(c, filter)
 }
 
+// showList — kirim list domain (untuk command /list)
 func (h *Handler) showList(c telebot.Context, filterKategori string) error {
 	chatID := c.Chat().ID
 	urlsByLabel := h.ch.LoadURLs(chatID)
@@ -431,6 +446,46 @@ func (h *Handler) showList(c telebot.Context, filterKategori string) error {
 
 	sortDomainEntries(items)
 	return sendLongMessage(c, buildListText(items, filterKategori), menuMarkup())
+}
+
+// showListEditing — tampilkan list domain dengan edit in-place (untuk tombol List Domain)
+// Untuk list pendek: edit pesan saat ini. Untuk list panjang: edit ke chunk pertama, send sisanya.
+func (h *Handler) showListEditing(c telebot.Context, filterKategori string) error {
+	chatID := c.Chat().ID
+	urlsByLabel := h.ch.LoadURLs(chatID)
+
+	if len(urlsByLabel) == 0 {
+		return c.Edit("📭 Belum ada domain yang terdaftar.", menuMarkup(), telebot.ModeMarkdown)
+	}
+
+	var items []checker.DomainEntry
+	for label, domains := range urlsByLabel {
+		if filterKategori != "" && label != filterKategori {
+			continue
+		}
+		for _, domain := range domains {
+			items = append(items, checker.DomainEntry{Domain: domain, Label: label})
+		}
+	}
+
+	if len(items) == 0 {
+		return c.Edit(fmt.Sprintf("📭 Tidak ada domain untuk kategori: *%s*", filterKategori), menuMarkup(), telebot.ModeMarkdown)
+	}
+
+	sortDomainEntries(items)
+	text := buildListText(items, filterKategori)
+
+	const maxLen = 3800
+	if len(text) <= maxLen {
+		// Muat dalam satu pesan — edit in-place
+		if err := c.Edit(text, menuMarkup(), telebot.ModeMarkdown); err == nil {
+			return nil
+		}
+	}
+
+	// Terlalu panjang atau edit gagal — hapus kategori message, kirim baru
+	c.Delete()
+	return sendLongMessage(c, text, menuMarkup())
 }
 
 func (h *Handler) handleCycle(c telebot.Context) error {
